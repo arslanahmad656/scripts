@@ -33,7 +33,8 @@ keep the cache small.
   built-in shell, because PowerShell Core is not on a fresh Windows install. The
   script *installs* PowerShell Core for you (`PowerShell` key), but it runs on
   Windows PowerShell.
-- Administrator rights. The script self-elevates if needed.
+- Administrator rights **for installing** (the script self-elevates if needed).
+  `-DownloadOnly` and `-DryRun` run as a standard user — no elevation prompt.
 - Internet access.
 
 > **winget is bootstrapped automatically.** You do not need winget pre-installed.
@@ -128,7 +129,8 @@ existing cached installer is reused. Use `-RefreshCache` to force a re-download.
 Use **`-DownloadOnly`** to populate the cache on an online machine without
 installing anything (it caches even packages that are already installed, and
 ignores the "already installed" skip). This is the recommended way to pre-seed a
-shared cache that other machines then install from offline.
+shared cache that other machines then install from offline. Because it installs
+nothing, `-DownloadOnly` does **not** require administrator rights.
 
 > **Why the split?** `winget`'s downloaded manifest still points at a remote URL,
 > and `winget install --manifest` both re-downloads and requires an admin-only

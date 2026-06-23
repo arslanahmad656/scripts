@@ -121,6 +121,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Resolve relative -CachePath / -LogPath against the SCRIPT directory (not the
+# caller's working directory). This also matters for self-elevation: the elevated
+# process starts in system32, so we forward fully-resolved absolute paths.
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not [System.IO.Path]::IsPathRooted($CachePath)) {
+    $CachePath = [System.IO.Path]::GetFullPath((Join-Path $scriptDir $CachePath))
+}
+if (-not [System.IO.Path]::IsPathRooted($LogPath)) {
+    $LogPath = [System.IO.Path]::GetFullPath((Join-Path $scriptDir $LogPath))
+}
+# Ensure the elevated relaunch receives the resolved absolute paths.
+if ($PSBoundParameters.ContainsKey('CachePath')) { $PSBoundParameters['CachePath'] = $CachePath }
+if ($PSBoundParameters.ContainsKey('LogPath'))   { $PSBoundParameters['LogPath']   = $LogPath }
+
 #==============================================================================
 # Logging infrastructure
 #==============================================================================
@@ -963,12 +977,19 @@ try {
     Write-Log "Cache root      : $script:CacheRoot" 'INFO'
     Write-Log "PowerShell      : $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))" 'INFO'
 
-    if (-not (Test-IsAdmin)) {
+    # Installing requires admin; download-only (caching) does not, so don't force
+    # an elevation prompt for it.
+    if (Test-IsAdmin) {
+        Write-Log 'Running with administrator rights.' 'OK'
+    }
+    elseif ($DownloadOnly -or $DryRun) {
+        Write-Log 'Running without administrator rights (allowed for download-only / dry-run).' 'INFO'
+    }
+    else {
         Invoke-SelfElevation -BoundParameters $PSBoundParameters
         Write-Log 'Continuing in the elevated window. This window can be closed.' 'INFO'
         return
     }
-    Write-Log 'Running with administrator rights.' 'OK'
 
     $modeLabel = if ($DownloadOnly) { 'Software to cache  ' } else { 'Software to install' }
     Write-Log ("{0} : {1}" -f $modeLabel, ($Software -join ', ')) 'INFO'
