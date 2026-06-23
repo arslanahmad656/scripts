@@ -118,8 +118,9 @@ are cached under `-CachePath` (default `%LOCALAPPDATA%\DevEnvInstaller\Cache`).
 
 | Software group | How it's cached | How it's installed on a cache hit |
 |----------------|-----------------|-----------------------------------|
-| The 7 simple apps (SSMS, Notepad++, VS Code, GitHub Desktop, Postman, Claude, PowerShell) | `winget download` into `apps\<id>\<version>\` | The cached installer is run directly using the silent switch winget records in the sidecar manifest. If that fails, it falls back to a normal online `winget install`. |
+| The 6 simple apps (Notepad++, VS Code, GitHub Desktop, Postman, Claude, PowerShell) | `winget download` into `apps\<id>\<version>\` | The cached installer is run directly using the silent switch winget records in the sidecar manifest. If that fails, it falls back to a normal online `winget install`. |
 | Visual Studio  | An **offline layout** (`--layout`) under `visualstudio\layout\` | Installed offline with `--noWeb` (no large re-download). |
+| SSMS 22        | An **offline layout** (`vs_SSMS.exe --layout`) under `ssms\layout\` | Installed offline with `--noWeb`. SSMS 21/22 has no standalone MSI — it installs via the Visual Studio Installer, so a plain `winget download` only fetches a ~5 MB stub that fails offline. |
 | SQL Server     | The Developer-edition **ISO** downloaded directly under `sqlserver\SQLServer-x64-ENU-Dev.iso` | The ISO is mounted and `setup.exe` is run silently, then dismounted. |
 
 The cache key for the simple apps includes the resolved **version**, so when a
@@ -135,10 +136,11 @@ nothing, `-DownloadOnly` does **not** require administrator rights.
 > **Why the split?** `winget`'s downloaded manifest still points at a remote URL,
 > and `winget install --manifest` both re-downloads and requires an admin-only
 > policy (`LocalManifestFiles`). Running the cached installer directly is what
-> makes the cache actually save bandwidth. Visual Studio ships a tiny web
-> bootstrapper, so it caches meaningfully only via an offline layout. SQL Server
-> is cached as its full Developer **ISO**, fetched with a plain HTTP download
-> (no admin), and installed by mounting that ISO (admin).
+> makes the cache actually save bandwidth. Visual Studio **and SSMS 21/22** ship
+> tiny Visual Studio Installer stubs, so they cache meaningfully only via an
+> offline layout (`--layout` / `--noWeb`). SQL Server is cached as its full
+> Developer **ISO**, fetched with a plain HTTP download (no admin), and installed
+> by mounting that ISO (admin).
 
 ## Testing the cache offline (VM checkpoint workflow)
 
@@ -159,6 +161,7 @@ powershell -ExecutionPolicy Bypass -File .\Install-DevEnvironment.ps1 -CachePath
 4. **Verify the cache populated** before reverting:
    - `E:\DevCache\apps\<id>\<version>\` has an installer + `.yaml` for each app
    - `E:\DevCache\visualstudio\layout\` is populated (if VS was selected)
+   - `E:\DevCache\ssms\layout\` is populated and contains `vs_SSMS.exe` (if SSMS was selected)
    - `E:\DevCache\sqlserver\SQLServer-x64-ENU-Dev.iso` exists (~1.1 GB)
 5. **Revert the checkpoint** to the clean state.
 6. **Second run (offline)** — disable the network, then:

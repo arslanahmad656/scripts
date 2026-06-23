@@ -721,10 +721,18 @@ function Install-CachedApp {
     return [pscustomobject]@{ Name = $Item.DisplayName; Status = $map.Status; Source = $source }
 }
 
-function Install-VisualStudioCached {
+function Install-VsInstallerLayout {
     <#
-        Method 'visualstudio': build (and cache) an offline layout with the
-        required workloads, then install offline with --noWeb.
+        Method 'vslayout': for products that ship as a Visual Studio Installer
+        bootstrapper (Visual Studio itself AND SSMS 21/22, which no longer has a
+        standalone MSI). Build (and cache) an offline layout with the required
+        components, then install offline with --noWeb.
+
+        Catalog fields used:
+          BootstrapperUrl   download URL of the VS-installer stub (e.g. vs_enterprise.exe / vs_SSMS.exe)
+          BootstrapperName  file name to save the stub as (e.g. 'vs_enterprise.exe')
+          CacheDir          sub-folder under the cache root for this product
+          ComponentArgs     args used in BOTH layout and install (e.g. --add ... --includeRecommended)
     #>
     param([string] $WingetExe, [hashtable] $Item, [int] $Index, [int] $Total)
 
@@ -736,53 +744,55 @@ function Install-VisualStudioCached {
         return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'Skipped (already installed)'; Source = '-' }
     }
 
-    $vsRoot      = Join-Path $script:CacheRoot 'visualstudio'
-    $bootstrapper = Join-Path $vsRoot 'vs_enterprise.exe'
-    $layout      = Join-Path $vsRoot 'layout'
-    $workloadArgs = @(
-        '--add', 'Microsoft.VisualStudio.Workload.NetWeb',
-        '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktop',
-        '--includeRecommended'
-    )
+    $root          = Join-Path $script:CacheRoot $Item.CacheDir
+    $bootstrapper  = Join-Path $root $Item.BootstrapperName
+    $layout        = Join-Path $root 'layout'
+    $componentArgs = @($Item.ComponentArgs)
 
-    $layoutReady = (Test-Path -LiteralPath $layout) -and
-                   ((Get-ChildItem -LiteralPath $layout -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0) -and
+    # The layout must always contain a usable copy of the bootstrapper for the
+    # offline install. Treat the layout as ready only if that exe is present.
+    $layoutBootstrapper = Join-Path $layout $Item.BootstrapperName
+    $layoutReady = (Test-Path -LiteralPath $layoutBootstrapper) -and
+                   ((Get-ChildItem -LiteralPath $layout -ErrorAction SilentlyContinue | Measure-Object).Count -gt 1) -and
                    -not $RefreshCache
 
     if ($DryRun) {
         $tail = if ($DownloadOnly) { 'cache layout only (no install)' } else { 'install offline from layout' }
         if ($layoutReady) { Write-Log "[DryRun] Layout cache HIT -> would $tail ($layout)" 'WARN' }
-        else              { Write-Log "[DryRun] Layout cache MISS -> would download bootstrapper and build layout (tens of GB)" 'WARN' }
+        else              { Write-Log "[DryRun] Layout cache MISS -> would download bootstrapper and build layout" 'WARN' }
         return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'DryRun'; Source = $(if ($layoutReady) { 'Cache' } else { 'Layout build' }) }
     }
 
     $source = 'Cache'
     if (-not $layoutReady) {
         $source = 'Layout build'
-        Save-CachedFile -Url $Item.BootstrapperUrl -Path $bootstrapper -Description 'Visual Studio bootstrapper'
+        Save-CachedFile -Url $Item.BootstrapperUrl -Path $bootstrapper -Description "$($Item.DisplayName) bootstrapper"
+        try { Unblock-File -LiteralPath $bootstrapper -ErrorAction SilentlyContinue } catch { }
 
-        Write-Log 'Building offline layout (this downloads tens of GB the first time)...' 'INFO'
-        $layoutArgs = @('--layout', $layout, '--lang', 'en-US', '--quiet', '--wait') + $workloadArgs
+        Write-Log 'Building offline layout (this downloads the full payload the first time)...' 'INFO'
+        $layoutArgs = @('--layout', $layout, '--lang', 'en-US', '--quiet', '--wait') + $componentArgs
         $lc = Invoke-LoggedNative -FilePath $bootstrapper -Arguments $layoutArgs
         if ($lc -ne 0 -and $lc -ne 3010) {
             Write-Log "Layout build returned exit code $lc; attempting install anyway." 'WARN'
+        }
+        if (-not (Test-Path -LiteralPath $layoutBootstrapper)) {
+            throw "Offline layout build did not produce $layoutBootstrapper (the download likely failed or was incomplete)."
         }
     } else {
         Write-Log "Layout cache hit -> $layout" 'OK'
     }
 
     if ($DownloadOnly) {
-        Write-Log 'Download-only: Visual Studio layout is cached, skipping install.' 'OK'
+        Write-Log 'Download-only: offline layout is cached, skipping install.' 'OK'
         return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'Cached (download only)'; Source = $source }
     }
 
-    $layoutBootstrapper = Join-Path $layout 'vs_enterprise.exe'
     $installExe = if (Test-Path -LiteralPath $layoutBootstrapper) { $layoutBootstrapper } else { $bootstrapper }
     try { Unblock-File -LiteralPath $installExe -ErrorAction SilentlyContinue } catch { }
 
-    Write-Log 'Installing Visual Studio offline from layout (--noWeb)...' 'INFO'
+    Write-Log "Installing $($Item.DisplayName) offline from layout (--noWeb)..." 'INFO'
     $start = Get-Date
-    $installArgs = @('--noWeb', '--quiet', '--wait', '--norestart') + $workloadArgs
+    $installArgs = @('--noWeb', '--quiet', '--wait', '--norestart') + $componentArgs
     $code = Invoke-LoggedNative -FilePath $installExe -Arguments $installArgs
     $map  = ConvertFrom-ExitCode -Code $code
     $elapsed = (Get-Date) - $start
@@ -880,10 +890,17 @@ function Install-SqlServerCached {
 
 $catalog = @{
     'VisualStudio' = @{
-        DisplayName     = 'Visual Studio Enterprise 2026 (ASP.NET Core + .NET Desktop)'
-        Id              = 'Microsoft.VisualStudio.Enterprise'
-        Method          = 'visualstudio'
-        BootstrapperUrl = 'https://aka.ms/vs/18/Stable/vs_enterprise.exe'
+        DisplayName      = 'Visual Studio Enterprise 2026 (ASP.NET Core + .NET Desktop)'
+        Id               = 'Microsoft.VisualStudio.Enterprise'
+        Method           = 'vslayout'
+        BootstrapperUrl  = 'https://aka.ms/vs/18/Stable/vs_enterprise.exe'
+        BootstrapperName = 'vs_enterprise.exe'
+        CacheDir         = 'visualstudio'
+        ComponentArgs    = @(
+            '--add', 'Microsoft.VisualStudio.Workload.NetWeb',
+            '--add', 'Microsoft.VisualStudio.Workload.ManagedDesktop',
+            '--includeRecommended'
+        )
     }
     'SqlServer' = @{
         DisplayName = 'SQL Server 2022 Developer Edition'
@@ -894,9 +911,16 @@ $catalog = @{
         MediaUrl    = 'https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLServer2022-x64-ENU-Dev.iso'
     }
     'SSMS' = @{
-        DisplayName = 'SQL Server Management Studio 22'
-        Id          = 'Microsoft.SQLServerManagementStudio.22'
-        Method      = 'winget'
+        # SSMS 21/22 has no standalone MSI; it installs via the Visual Studio
+        # Installer (vs_SSMS.exe is a ~5 MB stub that pulls the payload online).
+        # So it must be cached as an offline VS layout to work offline.
+        DisplayName      = 'SQL Server Management Studio 22'
+        Id               = 'Microsoft.SQLServerManagementStudio.22'
+        Method           = 'vslayout'
+        BootstrapperUrl  = 'https://aka.ms/ssms/22/release/vs_SSMS.exe'
+        BootstrapperName = 'vs_SSMS.exe'
+        CacheDir         = 'ssms'
+        ComponentArgs    = @('--includeRecommended')
     }
     'NotepadPlusPlus' = @{
         DisplayName = 'Notepad++'
@@ -988,9 +1012,9 @@ try {
         # must not abort the rest of the batch.
         try {
             switch ($item.Method) {
-                'visualstudio' { $results += Install-VisualStudioCached -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
-                'sqlserver'    { $results += Install-SqlServerCached    -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
-                default        { $results += Install-CachedApp          -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+                'vslayout'  { $results += Install-VsInstallerLayout -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+                'sqlserver' { $results += Install-SqlServerCached   -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+                default     { $results += Install-CachedApp         -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
             }
         }
         catch {
