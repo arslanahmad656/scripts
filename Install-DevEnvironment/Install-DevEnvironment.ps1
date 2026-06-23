@@ -20,17 +20,18 @@
             the cached path fails, so caching can never break an install.
           - Visual Studio: cached as an offline layout (--layout) and installed
             offline (--noWeb).
-          - SQL Server: installation media cached once, then installed from media.
+          - SQL Server: Developer ISO cached once via a direct download (no admin),
+            then installed by mounting the ISO and running setup (admin).
       * Extensive logging (timestamped, leveled) plus a full transcript, and
         live progress reporting.
 
     Only the latest single version of the heavyweight products is supported to
-    keep the cache small: Visual Studio Enterprise 2026 and SQL Server 2025
+    keep the cache small: Visual Studio Enterprise 2026 and SQL Server 2022
     Developer.
 
     Supported software keys:
         VisualStudio      Visual Studio Enterprise 2026 (ASP.NET + .NET Desktop)
-        SqlServer         SQL Server 2025 Developer Edition
+        SqlServer         SQL Server 2022 Developer Edition
         SSMS              SQL Server Management Studio 22
         NotepadPlusPlus   Notepad++
         VSCode            Visual Studio Code
@@ -792,8 +793,10 @@ function Install-VisualStudioCached {
 
 function Install-SqlServerCached {
     <#
-        Method 'sqlserver': download the SQL installation media once (cached), then
-        run a silent install from that media.
+        Method 'sqlserver': download the SQL Server Developer ISO directly (a plain
+        HTTP download that needs NO admin, so it can be cached by a standard user),
+        then at install time mount the ISO and run setup silently (mount + install
+        require admin).
     #>
     param([string] $WingetExe, [hashtable] $Item, [int] $Index, [int] $Total)
 
@@ -806,94 +809,68 @@ function Install-SqlServerCached {
     }
 
     $sqlRoot = Join-Path $script:CacheRoot 'sqlserver'
-    $ssei    = Join-Path $sqlRoot 'SQL-SSEI-Dev.exe'
-    $media   = Join-Path $sqlRoot 'media'
-
-    $mediaExe = $null
-    if (Test-Path -LiteralPath $media) {
-        $mediaExe = Get-ChildItem -LiteralPath $media -Filter 'SQLServer*-x64-*.exe' -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
-    }
-    $mediaReady = [bool]$mediaExe -and -not $RefreshCache
+    $iso     = Join-Path $sqlRoot 'SQLServer-x64-ENU-Dev.iso'
+    $isoReady = (Test-Path -LiteralPath $iso) -and -not $RefreshCache
 
     if ($DryRun) {
-        $tail = if ($DownloadOnly) { 'cache media only (no install)' } else { 'install from media' }
-        if ($mediaReady) { Write-Log "[DryRun] Media cache HIT -> would $tail ($media)" 'WARN' }
-        else             { Write-Log "[DryRun] Media cache MISS -> would download SQL media (several GB) then $tail" 'WARN' }
-        return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'DryRun'; Source = $(if ($mediaReady) { 'Cache' } else { 'Media download' }) }
+        $tail = if ($DownloadOnly) { 'cache ISO only (no install)' } else { 'mount + install' }
+        if ($isoReady) { Write-Log "[DryRun] ISO cache HIT -> would $tail ($iso)" 'WARN' }
+        else           { Write-Log "[DryRun] ISO cache MISS -> would download SQL ISO (~1.1 GB) then $tail" 'WARN' }
+        return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'DryRun'; Source = $(if ($isoReady) { 'Cache' } else { 'ISO download' }) }
     }
 
+    # --- Cache the ISO (no admin required) ---
     $source = 'Cache'
-    if (-not $mediaReady) {
-        $source = 'Media download'
-
-        # Obtain the SSEI bootstrapper. Prefer winget download (version-pinned and
-        # avoids fragile evergreen fwlinks); fall back to a configured URL.
-        if (-not (Test-Path -LiteralPath $ssei) -or $RefreshCache) {
-            $sseiTmp = Join-Path $sqlRoot 'ssei-dl'
-            if (Test-Path -LiteralPath $sseiTmp) { Remove-Item -LiteralPath $sseiTmp -Recurse -Force -ErrorAction SilentlyContinue }
-            New-Item -ItemType Directory -Path $sseiTmp -Force | Out-Null
-
-            Write-Log 'Fetching SQL Server bootstrapper via winget download...' 'INFO'
-            $dlArgs = @('download', '--id', $Item.Id, '--exact', '--source', 'winget',
-                        '--accept-package-agreements', '--accept-source-agreements', '-d', $sseiTmp)
-            $null = Invoke-LoggedNative -FilePath $WingetExe -Arguments $dlArgs
-            $dlExe = Get-ChildItem -LiteralPath $sseiTmp -Filter '*.exe' -ErrorAction SilentlyContinue |
-                Select-Object -First 1 -ExpandProperty FullName
-
-            if ($dlExe) {
-                Copy-Item -LiteralPath $dlExe -Destination $ssei -Force
-            } elseif ($Item.SseiUrl) {
-                Write-Log 'winget download yielded no exe; falling back to configured SSEI URL.' 'WARN'
-                Save-CachedFile -Url $Item.SseiUrl -Path $ssei -Description 'SQL Server SSEI bootstrapper'
-            } else {
-                throw 'Could not obtain the SQL Server bootstrapper.'
-            }
-        }
-
-        Write-Log 'Downloading SQL Server media into cache (several GB)...' 'INFO'
-        try { Unblock-File -LiteralPath $ssei -ErrorAction SilentlyContinue } catch { }
-        if (Test-Path -LiteralPath $media) { Remove-Item -LiteralPath $media -Recurse -Force -ErrorAction SilentlyContinue }
-        $sseiArgs = @('/Action=Download', "/MediaPath=$media", '/MediaType=CAB', '/Quiet', '/HideProgressBar')
-        $null = Invoke-LoggedNative -FilePath $ssei -Arguments $sseiArgs
-
-        $mediaExe = Get-ChildItem -LiteralPath $media -Filter 'SQLServer*-x64-*.exe' -ErrorAction SilentlyContinue |
-            Select-Object -First 1 -ExpandProperty FullName
-        if (-not $mediaExe) { throw "SQL media download did not produce the expected installer in $media" }
+    if (-not $isoReady) {
+        $source = 'ISO download'
+        if ($RefreshCache -and (Test-Path -LiteralPath $iso)) { Remove-Item -LiteralPath $iso -Force -ErrorAction SilentlyContinue }
+        if (-not $Item.MediaUrl) { throw 'No SQL Server ISO URL configured (Item.MediaUrl).' }
+        Save-CachedFile -Url $Item.MediaUrl -Path $iso -Description 'SQL Server Developer ISO (~1.1 GB)'
     } else {
-        Write-Log "Media cache hit -> $mediaExe" 'OK'
+        Write-Log "ISO cache hit -> $iso" 'OK'
     }
 
     if ($DownloadOnly) {
-        Write-Log 'Download-only: SQL Server media is cached, skipping extract/install.' 'OK'
+        Write-Log 'Download-only: SQL Server ISO is cached, skipping install.' 'OK'
         return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'Cached (download only)'; Source = $source }
     }
 
-    # The media .exe is a self-extractor; expand it to a setup folder, then run setup.
-    $setupDir = Join-Path $sqlRoot 'setup'
-    $setupExe = Join-Path $setupDir 'setup.exe'
-    if (-not (Test-Path -LiteralPath $setupExe) -or $RefreshCache) {
-        if (Test-Path -LiteralPath $setupDir) { Remove-Item -LiteralPath $setupDir -Recurse -Force -ErrorAction SilentlyContinue }
-        Write-Log 'Extracting SQL Server setup files from media...' 'INFO'
-        try { Unblock-File -LiteralPath $mediaExe -ErrorAction SilentlyContinue } catch { }
-        $null = Invoke-LoggedNative -FilePath $mediaExe -Arguments @('/qs', "/x:$setupDir")
+    # --- Install: mount ISO + run setup (requires admin) ---
+    if (-not (Test-IsAdmin)) {
+        Write-Log 'Installing SQL Server requires administrator rights (mounting the ISO and running setup). Skipping install; ISO is cached.' 'WARN'
+        return [pscustomobject]@{ Name = $Item.DisplayName; Status = 'Cached only (install needs admin)'; Source = $source }
     }
-    if (-not (Test-Path -LiteralPath $setupExe)) { throw "SQL setup.exe not found after extraction in $setupDir" }
-    try { Get-ChildItem -LiteralPath $setupDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue } catch { }
 
-    Write-Log 'Running silent SQL Server install (Database Engine, default instance)...' 'INFO'
-    $start = Get-Date
-    $setupArgs = @(
-        '/Q', '/ACTION=Install', '/FEATURES=SQLENGINE',
-        '/INSTANCENAME=MSSQLSERVER',
-        '/SQLSYSADMINACCOUNTS=BUILTIN\Administrators',
-        '/IACCEPTSQLSERVERLICENSETERMS', '/TCPENABLED=1', '/UPDATEENABLED=0'
-    )
-    $code = Invoke-LoggedNative -FilePath $setupExe -Arguments $setupArgs
-    $map  = ConvertFrom-ExitCode -Code $code
-    $elapsed = (Get-Date) - $start
+    try { Unblock-File -LiteralPath $iso -ErrorAction SilentlyContinue } catch { }
 
-    Write-Log ("{0}  [source {1}, elapsed {2:hh\:mm\:ss}]" -f $map.Status, $source, $elapsed) $map.Level
+    Write-Log 'Mounting SQL Server ISO...' 'INFO'
+    $mount = Mount-DiskImage -ImagePath $iso -PassThru
+    try {
+        $vol = ($mount | Get-Volume).DriveLetter
+        if (-not $vol) { Start-Sleep -Seconds 2; $vol = ($mount | Get-Volume).DriveLetter }
+        if (-not $vol) { throw 'Could not determine the mounted ISO drive letter.' }
+        $setupExe = "$vol`:\setup.exe"
+        if (-not (Test-Path -LiteralPath $setupExe)) { throw "setup.exe not found on mounted ISO ($setupExe)." }
+        Write-Log "ISO mounted at ${vol}: -> $setupExe" 'OK'
+
+        Write-Log 'Running silent SQL Server install (Database Engine, default instance)...' 'INFO'
+        $start = Get-Date
+        $setupArgs = @(
+            '/Q', '/ACTION=Install', '/FEATURES=SQLENGINE',
+            '/INSTANCENAME=MSSQLSERVER',
+            '/SQLSYSADMINACCOUNTS=BUILTIN\Administrators',
+            '/IACCEPTSQLSERVERLICENSETERMS', '/TCPENABLED=1', '/UPDATEENABLED=0'
+        )
+        $code = Invoke-LoggedNative -FilePath $setupExe -Arguments $setupArgs
+        $map  = ConvertFrom-ExitCode -Code $code
+        $elapsed = (Get-Date) - $start
+        Write-Log ("{0}  [source {1}, elapsed {2:hh\:mm\:ss}]" -f $map.Status, $source, $elapsed) $map.Level
+    }
+    finally {
+        Write-Log 'Dismounting SQL Server ISO...' 'INFO'
+        try { Dismount-DiskImage -ImagePath $iso | Out-Null } catch { Write-Log "Dismount failed: $($_.Exception.Message)" 'WARN' }
+    }
+
     return [pscustomobject]@{ Name = $Item.DisplayName; Status = $map.Status; Source = $source }
 }
 
@@ -909,10 +886,12 @@ $catalog = @{
         BootstrapperUrl = 'https://aka.ms/vs/18/Stable/vs_enterprise.exe'
     }
     'SqlServer' = @{
-        DisplayName = 'SQL Server 2025 Developer Edition'
-        Id          = 'Microsoft.SQLServer.2025.Developer'
+        DisplayName = 'SQL Server 2022 Developer Edition'
+        Id          = 'Microsoft.SQLServer.2022.Developer'
         Method      = 'sqlserver'
-        SseiUrl     = $null   # no reliable static URL; winget download is used
+        # Direct Developer-edition ISO (plain HTTP, no admin to download). This is
+        # the same media the SQL Basic installer's "Download Media" fetches.
+        MediaUrl    = 'https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLServer2022-x64-ENU-Dev.iso'
     }
     'SSMS' = @{
         DisplayName = 'SQL Server Management Studio 22'
@@ -1005,10 +984,18 @@ try {
     $total = $Software.Count
     for ($i = 0; $i -lt $total; $i++) {
         $item = $catalog[$Software[$i]]
-        switch ($item.Method) {
-            'visualstudio' { $results += Install-VisualStudioCached -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
-            'sqlserver'    { $results += Install-SqlServerCached    -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
-            default        { $results += Install-CachedApp          -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+        # Per-package isolation: a failure in one item (e.g. SQL needing admin)
+        # must not abort the rest of the batch.
+        try {
+            switch ($item.Method) {
+                'visualstudio' { $results += Install-VisualStudioCached -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+                'sqlserver'    { $results += Install-SqlServerCached    -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+                default        { $results += Install-CachedApp          -WingetExe $wingetExe -Item $item -Index ($i + 1) -Total $total }
+            }
+        }
+        catch {
+            Write-Log "$($item.DisplayName) failed: $($_.Exception.Message)" 'ERROR'
+            $results += [pscustomobject]@{ Name = $item.DisplayName; Status = "Failed ($($_.Exception.Message))"; Source = '-' }
         }
     }
 

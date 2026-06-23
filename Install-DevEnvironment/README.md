@@ -17,7 +17,7 @@ keep the cache small.
 | Key               | Software                                                  | winget ID |
 |-------------------|----------------------------------------------------------|-----------|
 | `VisualStudio`    | Visual Studio Enterprise 2026 (ASP.NET Core + .NET Desktop) | `Microsoft.VisualStudio.Enterprise` |
-| `SqlServer`       | SQL Server 2025 Developer Edition                       | `Microsoft.SQLServer.2025.Developer` |
+| `SqlServer`       | SQL Server 2022 Developer Edition                       | `Microsoft.SQLServer.2022.Developer` |
 | `SSMS`            | SQL Server Management Studio 22                          | `Microsoft.SQLServerManagementStudio.22` |
 | `NotepadPlusPlus` | Notepad++                                                | `Notepad++.Notepad++` |
 | `VSCode`          | Visual Studio Code                                       | `Microsoft.VisualStudioCode` |
@@ -120,7 +120,7 @@ are cached under `-CachePath` (default `%LOCALAPPDATA%\DevEnvInstaller\Cache`).
 |----------------|-----------------|-----------------------------------|
 | The 7 simple apps (SSMS, Notepad++, VS Code, GitHub Desktop, Postman, Claude, PowerShell) | `winget download` into `apps\<id>\<version>\` | The cached installer is run directly using the silent switch winget records in the sidecar manifest. If that fails, it falls back to a normal online `winget install`. |
 | Visual Studio  | An **offline layout** (`--layout`) under `visualstudio\layout\` | Installed offline with `--noWeb` (no large re-download). |
-| SQL Server     | Installation **media** (`/Action=Download`) under `sqlserver\media\` | Installed silently from the cached media. |
+| SQL Server     | The Developer-edition **ISO** downloaded directly under `sqlserver\SQLServer-x64-ENU-Dev.iso` | The ISO is mounted and `setup.exe` is run silently, then dismounted. |
 
 The cache key for the simple apps includes the resolved **version**, so when a
 new version is released you get a fresh download automatically; otherwise the
@@ -135,9 +135,10 @@ nothing, `-DownloadOnly` does **not** require administrator rights.
 > **Why the split?** `winget`'s downloaded manifest still points at a remote URL,
 > and `winget install --manifest` both re-downloads and requires an admin-only
 > policy (`LocalManifestFiles`). Running the cached installer directly is what
-> makes the cache actually save bandwidth. Visual Studio and SQL Server ship
-> tiny web bootstrappers, so they only cache meaningfully via their native
-> offline mechanisms (VS layout / SQL media).
+> makes the cache actually save bandwidth. Visual Studio ships a tiny web
+> bootstrapper, so it caches meaningfully only via an offline layout. SQL Server
+> is cached as its full Developer **ISO**, fetched with a plain HTTP download
+> (no admin), and installed by mounting that ISO (admin).
 
 ## Testing the cache offline (VM checkpoint workflow)
 
@@ -158,7 +159,7 @@ powershell -ExecutionPolicy Bypass -File .\Install-DevEnvironment.ps1 -CachePath
 4. **Verify the cache populated** before reverting:
    - `E:\DevCache\apps\<id>\<version>\` has an installer + `.yaml` for each app
    - `E:\DevCache\visualstudio\layout\` is populated (if VS was selected)
-   - `E:\DevCache\sqlserver\media\` has `SQLServer*-x64-*.exe` (+ `.box`)
+   - `E:\DevCache\sqlserver\SQLServer-x64-ENU-Dev.iso` exists (~1.1 GB)
 5. **Revert the checkpoint** to the clean state.
 6. **Second run (offline)** — disable the network, then:
 
@@ -177,9 +178,13 @@ powershell -ExecutionPolicy Bypass -File .\Install-DevEnvironment.ps1 -CachePath
 - Whatever you want installed offline must have been cached on the first run, so
   run the same `-Software` set (default = all) both times.
 - SQL Server's setup may need OS prerequisites (e.g. .NET Framework) that aren't
-  on a bare image; the cached media includes the SQL payload, but a fully bare
+  on a bare image; the cached ISO includes the SQL payload, but a fully bare
   offline box can still fail SQL prereqs. The 7 simple apps and Visual Studio
   (from layout) are the most reliable offline.
+- **SQL caching needs no admin**, but **installing** SQL does (mounting the ISO
+  and running setup). On a machine where you never get admin, you can still
+  cache the SQL ISO with `-DownloadOnly`; the install itself must happen on a
+  machine with admin rights.
 
 ## Logging & progress
 
@@ -221,8 +226,8 @@ When the script self-elevates, the elevated run reuses the same log file.
   development* (`Microsoft.VisualStudio.Workload.ManagedDesktop`) workloads plus
   recommended components. To pin specific SDKs (e.g. .NET 8 and .NET 10), add the
   corresponding component IDs to the workload arguments in the script.
-- **Disk space:** the VS offline layout and SQL media are large (tens of GB for
-  VS). Point `-CachePath` at a drive with room if needed.
+- **Disk space:** the VS offline layout and the SQL ISO (~1.1 GB) are large (tens
+  of GB for VS). Point `-CachePath` at a drive with room if needed.
 - **SQL Server install** uses a sensible silent default (Database Engine only,
   default `MSSQLSERVER` instance, local Administrators as sysadmin). Adjust the
   `setupArgs` in `Install-SqlServerCached` for more features/instances.
